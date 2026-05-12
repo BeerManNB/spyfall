@@ -5,7 +5,7 @@ A minimal Spyfall-style Telegram party game bot built with Python and FastAPI. I
 ## Features
 
 - Private-chat focused Telegram bot UI with inline buttons
-- Create a room with a 6-digit code
+- Create a room with a 4-digit code
 - Join a room by code
 - In-memory room lobby with owner, player list, refresh, leave, and start buttons
 - Owner-only game start and reveal
@@ -29,6 +29,7 @@ A minimal Spyfall-style Telegram party game bot built with Python and FastAPI. I
 | `TELEGRAM_BOT_TOKEN` | Yes | Token from BotFather. |
 | `WEBHOOK_SECRET` | No | Optional secret checked against Telegram's `X-Telegram-Bot-Api-Secret-Token` header. |
 | `PUBLIC_BASE_URL` | No | Public HTTPS base URL of your deployed app, useful when setting the webhook. |
+| `BOT_USERNAME` | No | Telegram bot username used to show invite links in lobbies. |
 
 ## Run locally
 
@@ -57,6 +58,7 @@ Telegram webhooks require a public HTTPS URL. For local development, use a tunne
    - `TELEGRAM_BOT_TOKEN`: your BotFather token
    - `WEBHOOK_SECRET`: any strong random string, optional but recommended
    - `PUBLIC_BASE_URL`: your Koyeb public app URL, for example `https://your-app.koyeb.app`
+   - `BOT_USERNAME`: your Telegram bot username without `@`, optional
 6. Deploy the app.
 7. Confirm the health endpoint works:
 
