@@ -11,12 +11,14 @@ from locations import LOCATIONS
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+BOT_USERNAME = os.getenv("BOT_USERNAME")
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 MIN_PLAYERS = 3
+ROOM_CODE_LENGTH = 4
 
 
 @dataclass
@@ -83,13 +85,24 @@ def display_name(user: dict[str, Any]) -> str:
 
 def generate_room_code() -> str:
     while True:
-        code = f"{random.randint(0, 999999):06d}"
+        code = f"{random.randint(0, 9999):04d}"
         if code not in rooms:
             return code
 
 
 def location_name(location: dict[str, str]) -> str:
     return location["name_ru"]
+
+
+def is_room_code(text: str) -> bool:
+    return text.isdigit() and len(text) == ROOM_CODE_LENGTH
+
+
+def invite_text(room: Room) -> str:
+    if BOT_USERNAME:
+        username = BOT_USERNAME.removeprefix("@")
+        return f"Ссылка для приглашения: https://t.me/{username}?start={room.code}"
+    return f"Приглашение: отправьте друзьям этот код: `{room.code}`"
 
 
 def lobby_text(room: Room) -> str:
@@ -101,7 +114,7 @@ def lobby_text(room: Room) -> str:
         f"🕵️ Комната Spyfall\n\n"
         f"Код комнаты: `{room.code}`\n\n"
         f"Игроки:\n{players}\n\n"
-        f"Приглашение: отправьте друзьям этот код: `{room.code}`"
+        f"{invite_text(room)}"
     )
     if room.in_game and room.possible_locations:
         locations = "\n".join(f"• {location_name(location)}" for location in room.possible_locations)
@@ -164,25 +177,58 @@ async def show_lobby(room: Room, player: Player) -> None:
     player.lobby_message_id = message["result"]["message_id"]
 
 
+def telegram_error_description(error: httpx.HTTPStatusError) -> str:
+    try:
+        data = error.response.json()
+    except ValueError:
+        return error.response.text
+    return str(data.get("description", ""))
+
+
+def is_message_not_modified(error: httpx.HTTPStatusError) -> bool:
+    return "message is not modified" in telegram_error_description(error).lower()
+
+
+def is_lobby_message_unavailable(error: httpx.HTTPStatusError) -> bool:
+    description = telegram_error_description(error).lower()
+    return any(
+        phrase in description
+        for phrase in (
+            "message to edit not found",
+            "message can't be edited",
+            "message identifier is not specified",
+        )
+    )
+
+
 async def refresh_lobby_for_player(room: Room, player: Player) -> None:
     if not player.lobby_message_id:
         await show_lobby(room, player)
         return
-    await edit_message(
-        player.chat_id,
-        player.lobby_message_id,
-        lobby_text(room),
-        lobby_keyboard(room, player.user_id),
-    )
+    try:
+        await edit_message(
+            player.chat_id,
+            player.lobby_message_id,
+            lobby_text(room),
+            lobby_keyboard(room, player.user_id),
+        )
+    except httpx.HTTPStatusError as error:
+        if is_message_not_modified(error):
+            return
+        if is_lobby_message_unavailable(error):
+            await show_lobby(room, player)
+            return
+        raise
 
 
-async def refresh_lobbies(room: Room) -> None:
+async def refresh_lobbies(room: Room, skip_user_id: int | None = None) -> None:
     for player in list(room.players.values()):
+        if player.user_id == skip_user_id:
+            continue
         try:
             await refresh_lobby_for_player(room, player)
         except httpx.HTTPError:
-            # A player may have deleted the old lobby message; send a fresh one.
-            await show_lobby(room, player)
+            pass
 
 
 def add_player_to_room(room: Room, user: dict[str, Any], chat_id: int) -> Player:
@@ -222,7 +268,7 @@ async def join_room(code: str, user: dict[str, Any], chat_id: int) -> None:
 
     player = add_player_to_room(room, user, chat_id)
     await show_lobby(room, player)
-    await refresh_lobbies(room)
+    await refresh_lobbies(room, skip_user_id=player.user_id)
 
 
 async def start_game(room: Room, user_id: int, chat_id: int) -> None:
@@ -306,7 +352,7 @@ async def handle_message(message: dict[str, Any]) -> None:
             return
 
         code = parts[1].strip()
-        if code.isdigit() and len(code) == 6 and code in rooms:
+        if is_room_code(code) and code in rooms:
             await join_room(code, user, chat_id)
         else:
             await send_message(chat_id, "Комната не найдена", main_menu_keyboard())
@@ -314,10 +360,10 @@ async def handle_message(message: dict[str, Any]) -> None:
 
     if user["id"] in awaiting_join_code:
         awaiting_join_code.discard(user["id"])
-        if text.isdigit() and len(text) == 6:
+        if is_room_code(text):
             await join_room(text, user, chat_id)
         else:
-            await send_message(chat_id, "Пожалуйста, отправьте корректный 6-значный код комнаты.", main_menu_keyboard())
+            await send_message(chat_id, "Пожалуйста, отправьте корректный 4-значный код комнаты.", main_menu_keyboard())
         return
 
     await send_message(chat_id, "Используйте кнопки меню, чтобы играть в Spyfall.", main_menu_keyboard())
@@ -340,7 +386,7 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
         return
     if data == "join_by_code":
         awaiting_join_code.add(user_id)
-        await send_message(chat_id, "Отправьте 6-значный код комнаты.")
+        await send_message(chat_id, "Отправьте 4-значный код комнаты.")
         return
     if data == "rules":
         await send_message(
@@ -360,7 +406,10 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
         return
 
     if action == "refresh":
-        await refresh_lobby_for_player(room, room.players[user_id])
+        try:
+            await refresh_lobby_for_player(room, room.players[user_id])
+        except httpx.HTTPError:
+            pass
     elif action == "start":
         await start_game(room, user_id, chat_id)
     elif action == "reveal":
