@@ -66,6 +66,33 @@ Telegram webhooks require a public HTTPS URL. For local development, use a tunne
    curl https://your-app.koyeb.app/health
    ```
 
+## Deploy to Yandex Serverless Containers
+
+1. Create a Yandex Cloud billing account.
+2. Create a Container Registry.
+3. Build and push the Docker image to the registry:
+
+   ```bash
+   docker build -t cr.yandex/<registry-id>/spyfall-bot:latest .
+   docker push cr.yandex/<registry-id>/spyfall-bot:latest
+   ```
+
+4. Create a Serverless Container from the pushed image.
+5. Set environment variables for the container:
+   - `TELEGRAM_BOT_TOKEN`: your BotFather token
+   - `BOT_USERNAME`: your Telegram bot username without `@`
+   - `WEBHOOK_SECRET`: any strong random string
+6. Make the container public / allow unauthenticated invoke.
+7. Set the Telegram webhook to the container URL:
+
+   ```bash
+   curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+     -d "url=https://<container-url>/webhook" \
+     -d "secret_token=$WEBHOOK_SECRET"
+   ```
+
+Rooms are still stored in memory and disappear after the container restarts.
+
 ## Set the Telegram webhook
 
 After deployment, tell Telegram where to send updates. Replace the values below with your real token, app URL, and optional secret.
@@ -95,4 +122,4 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
 
 - Rooms are stored in memory, so they disappear when the process restarts.
 - The bot is intended to be used mainly in private chat.
-- No database, login, payments, Docker, tests, or CI are included yet.
+- No database, login, payments, tests, or CI are included yet.
