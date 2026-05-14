@@ -70,20 +70,21 @@ Telegram webhooks require a public HTTPS URL. For local development, use a tunne
 
 1. Create a Yandex Cloud billing account.
 2. Create a Container Registry.
-3. Build and push the Docker image to the registry:
-
-   ```bash
-   docker build -t cr.yandex/<registry-id>/spyfall-bot:latest .
-   docker push cr.yandex/<registry-id>/spyfall-bot:latest
-   ```
-
-4. Create a Serverless Container from the pushed image.
-5. Set environment variables for the container:
+3. Create a service account with permission to push images to Container Registry, for example the `container-registry.images.pusher` role, then create an authorized key for it.
+4. In the GitHub repository, add these secrets under **Settings** -> **Secrets and variables** -> **Actions**:
+   - `YC_REGISTRY_ID`: your Yandex Container Registry ID.
+   - `YC_SERVICE_ACCOUNT_KEY`: the full JSON authorized key of the Yandex service account.
+5. Run the GitHub Actions workflow manually from **Actions** -> **Build and push Yandex Container Registry image** -> **Run workflow**. The workflow also runs automatically on pushes to `main`.
+6. After the workflow succeeds, use one of these image URLs:
+   - `cr.yandex/<registry-id>/spyfall-bot:<commit-sha>` for the exact image built from a commit.
+   - `cr.yandex/<registry-id>/spyfall-bot:latest` for the latest pushed image.
+7. Create a Yandex Serverless Container from the pushed image URL.
+8. Set environment variables for the container:
    - `TELEGRAM_BOT_TOKEN`: your BotFather token
    - `BOT_USERNAME`: your Telegram bot username without `@`
    - `WEBHOOK_SECRET`: any strong random string
-6. Make the container public / allow unauthenticated invoke.
-7. Set the Telegram webhook to the container URL:
+9. Make the container public / allow unauthenticated invoke.
+10. Set the Telegram webhook to the container URL:
 
    ```bash
    curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
@@ -91,7 +92,7 @@ Telegram webhooks require a public HTTPS URL. For local development, use a tunne
      -d "secret_token=$WEBHOOK_SECRET"
    ```
 
-Rooms are still stored in memory and disappear after the container restarts.
+Rooms are still stored in memory and disappear after the container restarts. The Docker image is built in GitHub Actions, so local Docker is not required for deployment.
 
 ## Set the Telegram webhook
 
