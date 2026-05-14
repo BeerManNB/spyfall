@@ -70,10 +70,10 @@ Telegram webhooks require a public HTTPS URL. For local development, use a tunne
 
 1. Create a Yandex Cloud billing account.
 2. Create a Container Registry.
-3. Create a service account with permission to push images to the registry, then create an authorized key for it.
+3. Create a service account with permission to push images to Container Registry, for example the `container-registry.images.pusher` role, then create an authorized key for it.
 4. In the GitHub repository, add these secrets under **Settings** -> **Secrets and variables** -> **Actions**:
    - `YC_REGISTRY_ID`: your Yandex Container Registry ID.
-   - `YC_SERVICE_ACCOUNT_KEY`: the full JSON contents of the service account authorized key.
+   - `YC_SERVICE_ACCOUNT_KEY`: the full JSON authorized key of the Yandex service account.
 5. Run the GitHub Actions workflow manually from **Actions** -> **Build and push Yandex Container Registry image** -> **Run workflow**. The workflow also runs automatically on pushes to `main`.
 6. After the workflow succeeds, use one of these image URLs:
    - `cr.yandex/<registry-id>/spyfall-bot:<commit-sha>` for the exact image built from a commit.
