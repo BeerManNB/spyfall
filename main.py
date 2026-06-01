@@ -268,13 +268,18 @@ async def show_lobby(room: Room, player: Player) -> None:
     player.lobby_message_id = message["result"]["message_id"]
 
 
-async def show_settings(room: Room, chat_id: int) -> None:
-    await send_message(chat_id, settings_text(room), settings_keyboard(room))
+async def show_settings(room: Room, chat_id: int, message_id: int | None = None) -> None:
+    await edit_or_send_message(chat_id, message_id, settings_text(room), settings_keyboard(room))
 
 
-async def show_location_selection(room: Room, chat_id: int, page: int) -> None:
+async def show_location_selection(room: Room, chat_id: int, page: int, message_id: int | None = None) -> None:
     page = max(0, min(page, (len(LOCATIONS) - 1) // LOCATION_SELECT_PAGE_SIZE))
-    await send_message(chat_id, location_selection_text(room, page), location_selection_keyboard(room, page))
+    await edit_or_send_message(
+        chat_id,
+        message_id,
+        location_selection_text(room, page),
+        location_selection_keyboard(room, page),
+    )
 
 
 def telegram_error_description(error: httpx.HTTPStatusError) -> str:
@@ -299,6 +304,26 @@ def is_lobby_message_unavailable(error: httpx.HTTPStatusError) -> bool:
             "message identifier is not specified",
         )
     )
+
+
+async def edit_or_send_message(
+    chat_id: int,
+    message_id: int | None,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not message_id:
+        return await send_message(chat_id, text, reply_markup)
+
+    try:
+        await edit_message(chat_id, message_id, text, reply_markup)
+        return {"result": {"message_id": message_id}}
+    except httpx.HTTPStatusError as error:
+        if is_message_not_modified(error):
+            return {"result": {"message_id": message_id}}
+        if is_lobby_message_unavailable(error):
+            return await send_message(chat_id, text, reply_markup)
+        raise
 
 
 async def refresh_lobby_for_player(room: Room, player: Player) -> None:
@@ -450,7 +475,13 @@ async def leave_room(room: Room, user_id: int, chat_id: int) -> None:
     await refresh_lobbies(room)
 
 
-async def set_location_mode(room: Room, user_id: int, chat_id: int, mode: str) -> None:
+async def set_location_mode(
+    room: Room,
+    user_id: int,
+    chat_id: int,
+    message_id: int | None,
+    mode: str,
+) -> None:
     if user_id != room.owner_id:
         await send_message(chat_id, "Только создатель комнаты может менять настройки.")
         return
@@ -461,11 +492,23 @@ async def set_location_mode(room: Room, user_id: int, chat_id: int, mode: str) -
         await send_message(chat_id, "Неизвестный режим локаций.")
         return
     room.location_mode = mode
-    await send_message(chat_id, f"Режим локаций изменён: {location_mode_name(room)}.", settings_keyboard(room))
-    await refresh_lobbies(room)
+    await edit_or_send_message(
+        chat_id,
+        message_id,
+        f"Режим локаций изменён: {location_mode_name(room)}.",
+        settings_keyboard(room),
+    )
+    await refresh_lobbies(room, skip_user_id=user_id)
 
 
-async def toggle_manual_location(room: Room, user_id: int, chat_id: int, page: int, location_id: str) -> None:
+async def toggle_manual_location(
+    room: Room,
+    user_id: int,
+    chat_id: int,
+    message_id: int | None,
+    page: int,
+    location_id: str,
+) -> None:
     if user_id != room.owner_id:
         await send_message(chat_id, "Только создатель комнаты может выбирать локации.")
         return
@@ -481,20 +524,21 @@ async def toggle_manual_location(room: Room, user_id: int, chat_id: int, page: i
     else:
         room.selected_location_ids.append(location_id)
     room.location_mode = "manual"
-    await show_location_selection(room, chat_id, page)
+    await show_location_selection(room, chat_id, page, message_id)
 
 
-async def finish_manual_selection(room: Room, user_id: int, chat_id: int) -> None:
+async def finish_manual_selection(room: Room, user_id: int, chat_id: int, message_id: int | None) -> None:
     if user_id != room.owner_id:
         await send_message(chat_id, "Только создатель комнаты может выбирать локации.")
         return
     room.location_mode = "manual"
-    await send_message(
+    await edit_or_send_message(
         chat_id,
+        message_id,
         f"Готово: выбрано локаций — {len(room.selected_location_ids)}.",
         settings_keyboard(room),
     )
-    await refresh_lobbies(room)
+    await refresh_lobbies(room, skip_user_id=user_id)
 
 
 async def handle_message(message: dict[str, Any]) -> None:
@@ -534,6 +578,7 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
     callback_query_id = callback_query["id"]
     data = callback_query.get("data", "")
     message = callback_query.get("message", {})
+    message_id = message.get("message_id")
     chat_id = message.get("chat", {}).get("id")
     user = callback_query.get("from", {})
     user_id = user.get("id")
@@ -584,20 +629,27 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
         if user_id != room.owner_id or room.in_game:
             await send_message(chat_id, "Настройки доступны только создателю комнаты до начала игры.")
         else:
-            await show_settings(room, chat_id)
+            await show_settings(room, chat_id, message_id)
     elif action == "mode" and len(parts) >= 3:
-        await set_location_mode(room, user_id, chat_id, parts[1])
+        await set_location_mode(room, user_id, chat_id, message_id, parts[1])
     elif action == "select_locations" and len(parts) >= 3:
         if user_id != room.owner_id or room.in_game:
             await send_message(chat_id, "Выбор локаций доступен только создателю комнаты до начала игры.")
         else:
-            await show_location_selection(room, chat_id, int(parts[2]))
+            await show_location_selection(room, chat_id, int(parts[2]), message_id)
     elif action == "toggle_location" and len(parts) >= 4:
-        await toggle_manual_location(room, user_id, chat_id, int(parts[2]), parts[3])
+        await toggle_manual_location(room, user_id, chat_id, message_id, int(parts[2]), parts[3])
     elif action == "manual_done":
-        await finish_manual_selection(room, user_id, chat_id)
+        await finish_manual_selection(room, user_id, chat_id, message_id)
     elif action == "back_lobby":
-        await show_lobby(room, room.players[user_id])
+        result = await edit_or_send_message(
+            chat_id,
+            message_id,
+            lobby_text(room),
+            lobby_keyboard(room, user_id),
+        )
+        if result:
+            room.players[user_id].lobby_message_id = result["result"]["message_id"]
     elif action == "reveal":
         await reveal_game(room, user_id, chat_id)
     elif action == "new_game":
