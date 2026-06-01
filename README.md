@@ -9,6 +9,8 @@ A minimal Spyfall-style Telegram party game bot built with Python and FastAPI. I
 - Join a room by code
 - In-memory room lobby with owner, player list, refresh, leave, and start buttons
 - Owner-only game start and reveal
+- Owner-only solo test start for checking the game flow with one player
+- Location modes before start: standard enabled locations, 15 random locations, or manual owner selection
 - Random 15-location shortlist, one actual location, and one spy
 - Private role messages to every player
 - Health endpoint at `GET /health`
@@ -118,6 +120,12 @@ You can inspect the active webhook with:
 ```bash
 curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
 ```
+
+## Location data
+
+Locations live in `locations.py`. Each location has an `image_key` for future image support, but real location images are not included yet and the bot does not send images yet.
+
+The expanded location list is adapted from `adrianocola/spyfall`; see `THIRD_PARTY_NOTICES.md` for the notice and MIT license text.
 
 ## Notes for the MVP
 

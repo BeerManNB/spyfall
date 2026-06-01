@@ -19,6 +19,14 @@ if not TELEGRAM_BOT_TOKEN:
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 MIN_PLAYERS = 3
 ROOM_CODE_LENGTH = 4
+ROUND_LOCATION_COUNT = 15
+LOCATION_SELECT_PAGE_SIZE = 10
+LOCATION_MODES = {
+    "default": "стандартные локации",
+    "random": "случайные локации",
+    "manual": "ручной выбор",
+}
+LOCATION_BY_ID = {location["id"]: location for location in LOCATIONS}
 
 
 @dataclass
@@ -34,11 +42,14 @@ class Room:
     code: str
     owner_id: int
     players: dict[int, Player] = field(default_factory=dict)
-    possible_locations: list[dict[str, str]] = field(default_factory=list)
-    actual_location: dict[str, str] | None = None
+    possible_locations: list[dict[str, Any]] = field(default_factory=list)
+    actual_location: dict[str, Any] | None = None
     spy_id: int | None = None
     in_game: bool = False
     revealed: bool = False
+    location_mode: str = "default"
+    selected_location_ids: list[str] = field(default_factory=list)
+    test_mode: bool = False
 
 
 app = FastAPI(title="Spyfall Telegram Bot MVP")
@@ -65,8 +76,14 @@ def lobby_keyboard(room: Room, user_id: int) -> dict[str, Any]:
                 buttons.append([{"text": "🔁 Новая игра", "callback_data": f"new_game:{room.code}"}])
             else:
                 buttons.append([{"text": "👀 Показать результат", "callback_data": f"reveal:{room.code}"}])
-    else:
-        buttons.append([{"text": "▶️ Начать игру", "callback_data": f"start:{room.code}"}])
+    elif user_id == room.owner_id:
+        buttons.extend(
+            [
+                [{"text": "▶️ Начать игру", "callback_data": f"start:{room.code}"}],
+                [{"text": "🧪 Тестовый старт", "callback_data": f"test_start:{room.code}"}],
+                [{"text": "⚙️ Настройки", "callback_data": f"settings:{room.code}"}],
+            ]
+        )
 
     buttons.extend(
         [
@@ -74,6 +91,44 @@ def lobby_keyboard(room: Room, user_id: int) -> dict[str, Any]:
             [{"text": "🚪 Выйти из комнаты", "callback_data": f"leave:{room.code}"}],
         ]
     )
+    return {"inline_keyboard": buttons}
+
+
+def settings_keyboard(room: Room) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "✅ Стандартные локации", "callback_data": f"mode:default:{room.code}"}],
+            [{"text": "🎲 Случайные локации", "callback_data": f"mode:random:{room.code}"}],
+            [{"text": "☑️ Выбрать вручную", "callback_data": f"select_locations:{room.code}:0"}],
+            [{"text": "⬅️ Назад в лобби", "callback_data": f"back_lobby:{room.code}"}],
+        ]
+    }
+
+
+def location_selection_keyboard(room: Room, page: int) -> dict[str, Any]:
+    start = page * LOCATION_SELECT_PAGE_SIZE
+    end = start + LOCATION_SELECT_PAGE_SIZE
+    buttons = []
+    selected_ids = set(room.selected_location_ids)
+    for location in LOCATIONS[start:end]:
+        mark = "✅" if location["id"] in selected_ids else "❌"
+        buttons.append(
+            [
+                {
+                    "text": f"{mark} {location_name(location)}",
+                    "callback_data": f"toggle_location:{room.code}:{page}:{location['id']}",
+                }
+            ]
+        )
+
+    navigation = []
+    if page > 0:
+        navigation.append({"text": "⬅️ Назад", "callback_data": f"select_locations:{room.code}:{page - 1}"})
+    if end < len(LOCATIONS):
+        navigation.append({"text": "▶️ Далее", "callback_data": f"select_locations:{room.code}:{page + 1}"})
+    if navigation:
+        buttons.append(navigation)
+    buttons.append([{"text": "✅ Готово", "callback_data": f"manual_done:{room.code}"}])
     return {"inline_keyboard": buttons}
 
 
@@ -90,8 +145,12 @@ def generate_room_code() -> str:
             return code
 
 
-def location_name(location: dict[str, str]) -> str:
+def location_name(location: dict[str, Any]) -> str:
     return location["name_ru"]
+
+
+def location_mode_name(room: Room) -> str:
+    return LOCATION_MODES.get(room.location_mode, LOCATION_MODES["default"])
 
 
 def is_room_code(text: str) -> bool:
@@ -114,17 +173,49 @@ def lobby_text(room: Room) -> str:
         f"🕵️ Комната Spyfall\n\n"
         f"Код комнаты: `{room.code}`\n\n"
         f"Игроки:\n{players}\n\n"
+        f"Режим локаций: {location_mode_name(room)}\n\n"
         f"{invite_text(room)}"
     )
+    if room.test_mode:
+        text += "\n\n🧪 Игра запущена в тестовом режиме."
     if room.in_game and room.possible_locations:
         locations = "\n".join(f"• {location_name(location)}" for location in room.possible_locations)
         text += f"\n\nВозможные локации:\n{locations}"
     if room.revealed:
         spy = room.players.get(room.spy_id) if room.spy_id else None
-        spy_name = spy.name if spy else "Неизвестно"
+        spy_name = spy.name if spy else "шпиона нет в этом тестовом раунде"
         actual_location = location_name(room.actual_location) if room.actual_location else "Неизвестно"
         text += f"\n\n🎉 Результат:\nЛокация: {actual_location}\nШпион: {spy_name}"
     return text
+
+
+def settings_text(room: Room) -> str:
+    selected_count = len(room.selected_location_ids)
+    return (
+        "⚙️ Настройки комнаты\n\n"
+        f"Текущий режим локаций: {location_mode_name(room)}\n"
+        f"Выбрано вручную: {selected_count}\n\n"
+        "Перед стартом игры будет показано 15 возможных локаций."
+    )
+
+
+def location_selection_text(room: Room, page: int) -> str:
+    total_pages = (len(LOCATIONS) + LOCATION_SELECT_PAGE_SIZE - 1) // LOCATION_SELECT_PAGE_SIZE
+    return (
+        "☑️ Ручной выбор локаций\n\n"
+        "Нажимайте на локации, чтобы включать или выключать их. "
+        "Для старта нужно выбрать минимум 15 локаций.\n\n"
+        f"Выбрано: {len(room.selected_location_ids)}\n"
+        f"Страница: {page + 1}/{total_pages}"
+    )
+
+
+def available_locations_for_room(room: Room) -> list[dict[str, Any]]:
+    if room.location_mode == "random":
+        return list(LOCATIONS)
+    if room.location_mode == "manual":
+        return [LOCATION_BY_ID[location_id] for location_id in room.selected_location_ids if location_id in LOCATION_BY_ID]
+    return [location for location in LOCATIONS if location.get("enabled_by_default")]
 
 
 async def telegram_request(method: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -177,6 +268,20 @@ async def show_lobby(room: Room, player: Player) -> None:
     player.lobby_message_id = message["result"]["message_id"]
 
 
+async def show_settings(room: Room, chat_id: int, message_id: int | None = None) -> None:
+    await edit_or_send_message(chat_id, message_id, settings_text(room), settings_keyboard(room))
+
+
+async def show_location_selection(room: Room, chat_id: int, page: int, message_id: int | None = None) -> None:
+    page = max(0, min(page, (len(LOCATIONS) - 1) // LOCATION_SELECT_PAGE_SIZE))
+    await edit_or_send_message(
+        chat_id,
+        message_id,
+        location_selection_text(room, page),
+        location_selection_keyboard(room, page),
+    )
+
+
 def telegram_error_description(error: httpx.HTTPStatusError) -> str:
     try:
         data = error.response.json()
@@ -199,6 +304,26 @@ def is_lobby_message_unavailable(error: httpx.HTTPStatusError) -> bool:
             "message identifier is not specified",
         )
     )
+
+
+async def edit_or_send_message(
+    chat_id: int,
+    message_id: int | None,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not message_id:
+        return await send_message(chat_id, text, reply_markup)
+
+    try:
+        await edit_message(chat_id, message_id, text, reply_markup)
+        return {"result": {"message_id": message_id}}
+    except httpx.HTTPStatusError as error:
+        if is_message_not_modified(error):
+            return {"result": {"message_id": message_id}}
+        if is_lobby_message_unavailable(error):
+            return await send_message(chat_id, text, reply_markup)
+        raise
 
 
 async def refresh_lobby_for_player(room: Room, player: Player) -> None:
@@ -271,31 +396,44 @@ async def join_room(code: str, user: dict[str, Any], chat_id: int) -> None:
     await refresh_lobbies(room, skip_user_id=player.user_id)
 
 
-async def start_game(room: Room, user_id: int, chat_id: int) -> None:
+async def start_game(room: Room, user_id: int, chat_id: int, test_mode: bool = False) -> None:
     if user_id != room.owner_id:
         await send_message(chat_id, "Только создатель комнаты может начать игру.")
         return
     if room.in_game:
         await send_message(chat_id, "Игра уже идёт.")
         return
-    if len(room.players) < MIN_PLAYERS:
+    if not test_mode and len(room.players) < MIN_PLAYERS:
         await send_message(chat_id, "Для начала нужно минимум 3 игрока.")
         return
 
-    room.possible_locations = random.sample(LOCATIONS, 15)
+    available_locations = available_locations_for_room(room)
+    if len(available_locations) < ROUND_LOCATION_COUNT:
+        await send_message(
+            chat_id,
+            "Недостаточно локаций для выбранного режима. Нужно минимум 15 локаций.",
+        )
+        return
+
+    room.possible_locations = random.sample(available_locations, ROUND_LOCATION_COUNT)
     room.actual_location = random.choice(room.possible_locations)
-    room.spy_id = random.choice(list(room.players.keys()))
+    if test_mode and len(room.players) == 1:
+        only_player_id = next(iter(room.players))
+        room.spy_id = only_player_id if random.choice([True, False]) else None
+    else:
+        room.spy_id = random.choice(list(room.players.keys()))
     room.in_game = True
     room.revealed = False
+    room.test_mode = test_mode
 
-    # Roles are sent privately so every player can keep their assignment secret.
+    mode_line = "\n\n🧪 Это тестовый старт для проверки игры." if test_mode else ""
     for player in room.players.values():
         if player.user_id == room.spy_id:
-            await send_message(player.chat_id, "Вы ШПИОН. Попробуйте угадать локацию из списка.")
+            await send_message(player.chat_id, f"Вы ШПИОН. Попробуйте угадать локацию из списка.{mode_line}")
         else:
             await send_message(
                 player.chat_id,
-                f"Вы НЕ шпион. Локация: {location_name(room.actual_location)}. Роль: обычный посетитель.",
+                f"Вы НЕ шпион. Локация: {location_name(room.actual_location)}. Роль: обычный посетитель.{mode_line}",
             )
     await refresh_lobbies(room)
 
@@ -320,6 +458,7 @@ async def new_game(room: Room, user_id: int, chat_id: int) -> None:
     room.spy_id = None
     room.in_game = False
     room.revealed = False
+    room.test_mode = False
     await refresh_lobbies(room)
 
 
@@ -334,6 +473,72 @@ async def leave_room(room: Room, user_id: int, chat_id: int) -> None:
         room.owner_id = next(iter(room.players))
     await send_message(chat_id, "Вы вышли из комнаты.", main_menu_keyboard())
     await refresh_lobbies(room)
+
+
+async def set_location_mode(
+    room: Room,
+    user_id: int,
+    chat_id: int,
+    message_id: int | None,
+    mode: str,
+) -> None:
+    if user_id != room.owner_id:
+        await send_message(chat_id, "Только создатель комнаты может менять настройки.")
+        return
+    if room.in_game:
+        await send_message(chat_id, "Настройки доступны только до начала игры.")
+        return
+    if mode not in LOCATION_MODES:
+        await send_message(chat_id, "Неизвестный режим локаций.")
+        return
+    room.location_mode = mode
+    await edit_or_send_message(
+        chat_id,
+        message_id,
+        f"Режим локаций изменён: {location_mode_name(room)}.",
+        settings_keyboard(room),
+    )
+    await refresh_lobbies(room, skip_user_id=user_id)
+
+
+async def toggle_manual_location(
+    room: Room,
+    user_id: int,
+    chat_id: int,
+    message_id: int | None,
+    page: int,
+    location_id: str,
+) -> None:
+    if user_id != room.owner_id:
+        await send_message(chat_id, "Только создатель комнаты может выбирать локации.")
+        return
+    if room.in_game:
+        await send_message(chat_id, "Локации можно выбирать только до начала игры.")
+        return
+    if location_id not in LOCATION_BY_ID:
+        await send_message(chat_id, "Локация не найдена.")
+        return
+
+    if location_id in room.selected_location_ids:
+        room.selected_location_ids.remove(location_id)
+    else:
+        room.selected_location_ids.append(location_id)
+    room.location_mode = "manual"
+    await show_location_selection(room, chat_id, page, message_id)
+
+
+async def finish_manual_selection(room: Room, user_id: int, chat_id: int, message_id: int | None) -> None:
+    if user_id != room.owner_id:
+        await send_message(chat_id, "Только создатель комнаты может выбирать локации.")
+        return
+    room.location_mode = "manual"
+    await edit_or_send_message(
+        chat_id,
+        message_id,
+        f"Готово: выбрано локаций — {len(room.selected_location_ids)}.",
+        settings_keyboard(room),
+    )
+    await refresh_lobbies(room, skip_user_id=user_id)
 
 
 async def handle_message(message: dict[str, Any]) -> None:
@@ -373,6 +578,7 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
     callback_query_id = callback_query["id"]
     data = callback_query.get("data", "")
     message = callback_query.get("message", {})
+    message_id = message.get("message_id")
     chat_id = message.get("chat", {}).get("id")
     user = callback_query.get("from", {})
     user_id = user.get("id")
@@ -396,7 +602,12 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
         )
         return
 
-    action, _, code = data.partition(":")
+    parts = data.split(":")
+    action = parts[0]
+    code = parts[1] if len(parts) > 1 else ""
+    if action == "mode" and len(parts) >= 3:
+        code = parts[2]
+
     room = rooms.get(code)
     if not room:
         await send_message(chat_id, "Эта комната больше не существует.", main_menu_keyboard())
@@ -412,6 +623,33 @@ async def handle_callback(callback_query: dict[str, Any]) -> None:
             pass
     elif action == "start":
         await start_game(room, user_id, chat_id)
+    elif action == "test_start":
+        await start_game(room, user_id, chat_id, test_mode=True)
+    elif action == "settings":
+        if user_id != room.owner_id or room.in_game:
+            await send_message(chat_id, "Настройки доступны только создателю комнаты до начала игры.")
+        else:
+            await show_settings(room, chat_id, message_id)
+    elif action == "mode" and len(parts) >= 3:
+        await set_location_mode(room, user_id, chat_id, message_id, parts[1])
+    elif action == "select_locations" and len(parts) >= 3:
+        if user_id != room.owner_id or room.in_game:
+            await send_message(chat_id, "Выбор локаций доступен только создателю комнаты до начала игры.")
+        else:
+            await show_location_selection(room, chat_id, int(parts[2]), message_id)
+    elif action == "toggle_location" and len(parts) >= 4:
+        await toggle_manual_location(room, user_id, chat_id, message_id, int(parts[2]), parts[3])
+    elif action == "manual_done":
+        await finish_manual_selection(room, user_id, chat_id, message_id)
+    elif action == "back_lobby":
+        result = await edit_or_send_message(
+            chat_id,
+            message_id,
+            lobby_text(room),
+            lobby_keyboard(room, user_id),
+        )
+        if result:
+            room.players[user_id].lobby_message_id = result["result"]["message_id"]
     elif action == "reveal":
         await reveal_game(room, user_id, chat_id)
     elif action == "new_game":
