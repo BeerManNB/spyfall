@@ -1,6 +1,8 @@
+import logging
 import os
 import random
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,6 +15,8 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
+logger = logging.getLogger(__name__)
+
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
@@ -21,6 +25,8 @@ MIN_PLAYERS = 3
 ROOM_CODE_LENGTH = 4
 ROUND_LOCATION_COUNT = 15
 LOCATION_SELECT_PAGE_SIZE = 10
+LOCATION_IMAGES_DIR = Path("assets/locations")
+FALLBACK_IMAGE_PATH = LOCATION_IMAGES_DIR / "fallback.png"
 LOCATION_MODES = {
     "default": "стандартные локации",
     "random": "случайные локации",
@@ -149,6 +155,13 @@ def location_name(location: dict[str, Any]) -> str:
     return location["name_ru"]
 
 
+def get_location_image_path(location: dict[str, Any]) -> Path:
+    image_path = LOCATION_IMAGES_DIR / f"{location['image_key']}.png"
+    if image_path.exists():
+        return image_path
+    return FALLBACK_IMAGE_PATH
+
+
 def location_mode_name(room: Room) -> str:
     return LOCATION_MODES.get(room.location_mode, LOCATION_MODES["default"])
 
@@ -230,6 +243,29 @@ async def send_message(chat_id: int, text: str, reply_markup: dict[str, Any] | N
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return await telegram_request("sendMessage", payload)
+
+
+async def send_photo(chat_id: int, image_path: Path, caption: str) -> dict[str, Any]:
+    with image_path.open("rb") as photo:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{TELEGRAM_API_URL}/sendPhoto",
+                data={"chat_id": chat_id, "caption": caption},
+                files={"photo": (image_path.name, photo, "image/png")},
+            )
+            response.raise_for_status()
+            return response.json()
+
+
+async def send_photo_or_text(chat_id: int, image_path: Path, caption: str, fallback_text: str) -> dict[str, Any]:
+    if not image_path.exists():
+        return await send_message(chat_id, fallback_text)
+
+    try:
+        return await send_photo(chat_id, image_path, caption)
+    except Exception:
+        logger.exception("Failed to send location image %s to chat %s", image_path, chat_id)
+        return await send_message(chat_id, fallback_text)
 
 
 async def edit_message(
@@ -426,14 +462,26 @@ async def start_game(room: Room, user_id: int, chat_id: int, test_mode: bool = F
     room.revealed = False
     room.test_mode = test_mode
 
+    actual_location = room.actual_location
+    if not actual_location:
+        await send_message(chat_id, "Не удалось выбрать локацию для игры.")
+        return
+
     mode_line = "\n\n🧪 Это тестовый старт для проверки игры." if test_mode else ""
+    spy_role_text = f"Вы ШПИОН. Локация неизвестна. Попробуйте угадать её из списка.{mode_line}"
+    location_role_text = (
+        f"Вы НЕ шпион. Локация: {location_name(actual_location)}. "
+        f"Роль: обычный посетитель.{mode_line}"
+    )
     for player in room.players.values():
         if player.user_id == room.spy_id:
-            await send_message(player.chat_id, f"Вы ШПИОН. Попробуйте угадать локацию из списка.{mode_line}")
+            await send_photo_or_text(player.chat_id, FALLBACK_IMAGE_PATH, spy_role_text, spy_role_text)
         else:
-            await send_message(
+            await send_photo_or_text(
                 player.chat_id,
-                f"Вы НЕ шпион. Локация: {location_name(room.actual_location)}. Роль: обычный посетитель.{mode_line}",
+                get_location_image_path(actual_location),
+                location_role_text,
+                location_role_text,
             )
     await refresh_lobbies(room)
 

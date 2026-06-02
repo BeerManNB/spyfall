@@ -121,9 +121,13 @@ You can inspect the active webhook with:
 curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
 ```
 
-## Location data
+## Location data and images
 
-Locations live in `locations.py`. Each location has an `image_key` for future image support, but real location images are not included yet and the bot does not send images yet.
+Locations live in `locations.py`. During the private role reveal, the bot can send a PNG image for the actual location to non-spy players. The spy never receives the actual location image.
+
+Put location images into `assets/locations/`. The filename must match the location `image_key` from `locations.py` and use the `.png` extension. For example, a location with `"image_key": "casino"` uses `assets/locations/casino.png`.
+
+Add a fallback image as `assets/locations/fallback.png`. If a location image is missing, the bot falls back to `fallback.png`; if the fallback image is also missing, the bot sends the role reveal as text only. Real location images are not included in this repository yet.
 
 The expanded location list is adapted from `adrianocola/spyfall`; see `THIRD_PARTY_NOTICES.md` for the notice and MIT license text.
 
