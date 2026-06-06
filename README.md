@@ -100,6 +100,8 @@ Rooms are still stored in memory and disappear after the container restarts. The
 
 After deployment, tell Telegram where to send updates. Replace the values below with your real token, app URL, and optional secret.
 
+The `/webhook` endpoint validates the optional secret, reads the update, schedules bot processing in the background, and returns `{"status": "ok"}` immediately. This avoids Telegram delivery retry timeouts while `sendMessage` or `sendPhoto` calls continue after acknowledgement.
+
 Without a secret:
 
 ```bash
