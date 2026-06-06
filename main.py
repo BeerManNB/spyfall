@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import random
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from locations import LOCATIONS
 
@@ -14,6 +15,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
+APP_VERSION = "webhook-asyncio-task-v1"
 
 logger = logging.getLogger(__name__)
 
@@ -729,25 +731,37 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-async def process_update(update: dict[str, Any]) -> None:
+@app.get("/version")
+async def version() -> dict[str, str]:
+    return {"version": APP_VERSION}
+
+
+def log_background_task_result(task: asyncio.Task[Any]) -> None:
     try:
-        if "message" in update:
-            await handle_message(update["message"])
-        elif "callback_query" in update:
-            await handle_callback(update["callback_query"])
+        task.result()
     except Exception:
-        logger.exception("Failed to process Telegram update")
+        logger.exception("Telegram update background task failed")
+
+
+async def process_update(update: dict[str, Any]) -> None:
+    logger.info("Telegram update background processing started")
+    if "message" in update:
+        await handle_message(update["message"])
+    elif "callback_query" in update:
+        await handle_callback(update["callback_query"])
+    logger.info("Telegram update background processing finished")
 
 
 @app.post("/webhook")
 async def webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, str]:
     if WEBHOOK_SECRET and x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     update = await request.json()
-    background_tasks.add_task(process_update, update)
+    logger.info("Received Telegram webhook update")
+    task = asyncio.create_task(process_update(update))
+    task.add_done_callback(log_background_task_result)
     return {"status": "ok"}
