@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
 from locations import LOCATIONS
 
@@ -729,17 +729,25 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+async def process_update(update: dict[str, Any]) -> None:
+    try:
+        if "message" in update:
+            await handle_message(update["message"])
+        elif "callback_query" in update:
+            await handle_callback(update["callback_query"])
+    except Exception:
+        logger.exception("Failed to process Telegram update")
+
+
 @app.post("/webhook")
 async def webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, str]:
     if WEBHOOK_SECRET and x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     update = await request.json()
-    if "message" in update:
-        await handle_message(update["message"])
-    elif "callback_query" in update:
-        await handle_callback(update["callback_query"])
+    background_tasks.add_task(process_update, update)
     return {"status": "ok"}
