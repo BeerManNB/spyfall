@@ -3,7 +3,7 @@ import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -25,8 +25,11 @@ MIN_PLAYERS = 3
 ROOM_CODE_LENGTH = 4
 ROUND_LOCATION_COUNT = 15
 LOCATION_SELECT_PAGE_SIZE = 10
-LOCATION_IMAGES_DIR = Path("assets/locations")
-FALLBACK_IMAGE_PATH = LOCATION_IMAGES_DIR / "fallback.png"
+BASE_DIR = Path(__file__).resolve().parent
+LOCATION_IMAGES_DIR = BASE_DIR / "assets" / "locations"
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+IMAGE_CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+FALLBACK_IMAGE_KEY = "fallback"
 LOCATION_MODES = {
     "default": "стандартные локации",
     "random": "случайные локации",
@@ -155,11 +158,20 @@ def location_name(location: dict[str, Any]) -> str:
     return location["name_ru"]
 
 
-def get_location_image_path(location: dict[str, Any]) -> Path:
-    image_path = LOCATION_IMAGES_DIR / f"{location['image_key']}.png"
-    if image_path.exists():
-        return image_path
-    return FALLBACK_IMAGE_PATH
+def find_image_path(image_key: str) -> Optional[Path]:
+    for extension in IMAGE_EXTENSIONS:
+        image_path = LOCATION_IMAGES_DIR / f"{image_key}{extension}"
+        if image_path.exists():
+            return image_path
+    return None
+
+
+def find_fallback_image_path() -> Optional[Path]:
+    return find_image_path(FALLBACK_IMAGE_KEY)
+
+
+def find_location_image_path(image_key: str) -> Optional[Path]:
+    return find_image_path(image_key) or find_fallback_image_path()
 
 
 def location_mode_name(room: Room) -> str:
@@ -246,19 +258,25 @@ async def send_message(chat_id: int, text: str, reply_markup: dict[str, Any] | N
 
 
 async def send_photo(chat_id: int, image_path: Path, caption: str) -> dict[str, Any]:
+    content_type = IMAGE_CONTENT_TYPES.get(image_path.suffix.lower(), "application/octet-stream")
     with image_path.open("rb") as photo:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(
                 f"{TELEGRAM_API_URL}/sendPhoto",
                 data={"chat_id": chat_id, "caption": caption},
-                files={"photo": (image_path.name, photo, "image/png")},
+                files={"photo": (image_path.name, photo, content_type)},
             )
             response.raise_for_status()
             return response.json()
 
 
-async def send_photo_or_text(chat_id: int, image_path: Path, caption: str, fallback_text: str) -> dict[str, Any]:
-    if not image_path.exists():
+async def send_photo_or_text(
+    chat_id: int,
+    image_path: Optional[Path],
+    caption: str,
+    fallback_text: str,
+) -> dict[str, Any]:
+    if image_path is None:
         return await send_message(chat_id, fallback_text)
 
     try:
@@ -475,11 +493,11 @@ async def start_game(room: Room, user_id: int, chat_id: int, test_mode: bool = F
     )
     for player in room.players.values():
         if player.user_id == room.spy_id:
-            await send_photo_or_text(player.chat_id, FALLBACK_IMAGE_PATH, spy_role_text, spy_role_text)
+            await send_photo_or_text(player.chat_id, find_fallback_image_path(), spy_role_text, spy_role_text)
         else:
             await send_photo_or_text(
                 player.chat_id,
-                get_location_image_path(actual_location),
+                find_location_image_path(actual_location["image_key"]),
                 location_role_text,
                 location_role_text,
             )
