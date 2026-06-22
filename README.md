@@ -45,6 +45,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 Telegram webhooks require a public HTTPS URL. For local development, use a tunnel such as ngrok or Cloudflare Tunnel, then set the webhook to the tunnel URL.
 
+## Run tests
+
+```bash
+pytest -q
+```
+
 ## Deploy to Koyeb
 
 1. Push this repository to GitHub.
